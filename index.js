@@ -1,6 +1,7 @@
 const express = require("express");
 const app = express();
 const bodyParser = require("body-parser");
+require("dotenv").config();
 
 app.use(bodyParser.json());
 
@@ -11,5 +12,5 @@ app.get("/", (req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log("server running..");
+  console.log("server running on ", PORT);
 });
