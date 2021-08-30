@@ -1,0 +1,103 @@
+trigger:
+  - master
+
+resources:
+  - repo: self
+
+variables:
+  tag: "$(Build.SourceVersion)"
+
+stages:
+  - stage: Build
+    displayName: Build and push stage
+    jobs:
+      - job: Build
+        displayName: Build
+        steps:
+          - task: Docker@2
+            displayName: Build and push an image to container registry
+            inputs:
+              containerRegistry: "akscontainerdemo"
+              repository: "aksContainerDemo"
+              command: "buildAndPush"
+              Dockerfile: "**/Dockerfile"
+              tags: |
+                $(tag)
+  - stage: DeployOnQA
+    dependsOn:
+      - Build
+    variables:
+      - name: NAMESPACE
+        value: "docscan-qa"
+      - name: SERVICE_NAME
+        value: "docscan"
+      - name: SERVICE_HEALTHCHECK
+        value: "/"
+      - name: SERVICE_PORT
+        value: "3000"
+      - name: DOCKER_IMAGE_NAME
+        value: "akscontainerdemo.azurecr.io/azure-deploy"
+      - name: NUM_OF_REPLICAS
+        value: "1"
+      - name: HOST_NAME
+        value: "docscan-qa-aks.apyhi.com"
+      - name: REQUESTED_CPU
+        value: "500m"
+      - name: REQUESTED_MEMORY
+        value: "500Mi"
+      - name: LIMIT_CPU
+        value: "700m"
+      - name: LIMIT_MEMORY
+        value: "700Mi"
+      - name: PROBE_INITIAL_DELAY
+        value: "80"
+      - name: ENVIRONMENT
+        value: "qa"
+      - name: HPA_MIN
+        value: "1"
+      - name: HPA_MAX
+        value: "2"
+      - name: CPU_PERCENT
+        value: "70"
+      - name: IMAGE_TAG
+        value: "$(Build.SourceVersion)"
+      - name: ENV_FILE
+        value: ".env"
+    jobs:
+      - deployment: DeployOnQA
+        displayName: deploy package on qa
+        environment: qa
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: DownloadSecureFile@1
+                  name: download_envfile_qa
+                  inputs:
+                    secureFile: ".env"
+
+                - task: DownloadSecureFile@1
+                  name: downlaod_config
+                  inputs:
+                    secureFile: "azure_configs.js"
+
+                - task: CopyFiles@2
+                  displayName: Copying files
+                  inputs:
+                    SourceFolder: "$(Agent.TempDirectory)"
+                    Contents: "*"
+                    TargetFolder: "$(Build.Repository.LocalPath)"
+
+                - task: Bash@3
+                  displayName: Deploy on QA AKS Cluster
+                  inputs:
+                    targetType: "inline"
+                    script: |
+                      export KUBECONFIG='$(Agent.HomeDirectory)/_work/kubeconfig'
+                      kubectl create namespace '$(NAMESPACE)' || true
+                      kubectl -n '$(NAMESPACE)' create configmap '$(SERVICE_NAME)-$(ENVIRONMENT)' --from-file='$(Build.Repository.LocalPath)/.env' -o yaml --dry-run=client | kubectl apply -f - || true
+                      kubectl -n '$(NAMESPACE)' create configmap '$(SERVICE_NAME)-psac-$(ENVIRONMENT)' --from-file='$(Build.Repository.LocalPath)/pdfservices-api-credentials.json' -o yaml --dry-run=client | kubectl apply -f - || true
+
+                      envsubst < ./azure_devops/kubernetes/deploy.yml | kubectl apply -f -
+                      kubectl -n ${NAMESPACE} rollout status --watch deployment '$(SERVICE_NAME)-deployment'
